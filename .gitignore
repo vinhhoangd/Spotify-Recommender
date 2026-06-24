@@ -12,3 +12,6 @@ __pycache__/
 
 # Trained model artifacts (regenerate with train.py)
 spotify-recommender/models/
+
+# Codex env
+.codex/
