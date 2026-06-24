@@ -1,214 +1,112 @@
 """
-Hybrid recommender combining:
-1. Collaborative filtering via ALS (Alternating Least Squares) matrix factorization
-2. Content-based filtering on Spotify audio features
+Serving-time recommenders that load the artifacts produced by train.py.
+
+- CollaborativeRecommender: artist→artist recommendations from ALS latent
+  factors (cosine similarity in the learned embedding space). Supports
+  multi-seed queries by averaging seed artist vectors.
+- ContentRecommender: track→track recommendations via cosine similarity
+  over scaled Spotify audio features.
 """
+import json
+import pickle
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from scipy.sparse import csr_matrix
-from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
-try:
-    import implicit
-    HAS_IMPLICIT = True
-except ImportError:
-    HAS_IMPLICIT = False
-
-AUDIO_FEATURES = [
-    "danceability", "energy", "loudness", "speechiness",
-    "acousticness", "instrumentalness", "liveness", "valence", "tempo",
-]
+MODELS_DIR = Path(__file__).parent / "models"
 
 
-class ContentBasedRecommender:
-    """Recommends tracks by cosine similarity on Spotify audio features."""
-
-    def __init__(self):
-        self.scaler = MinMaxScaler()
-        self.feature_matrix: np.ndarray | None = None
-        self.track_ids: list[str] = []
-        self.track_meta: pd.DataFrame | None = None
-
-    def fit(self, tracks_df: pd.DataFrame, features_df: pd.DataFrame):
-        merged = tracks_df.merge(features_df, on="track_id", how="inner").drop_duplicates("track_id")
-        self.track_meta = merged[["track_id", "name", "artist"]].reset_index(drop=True)
-        self.track_ids = merged["track_id"].tolist()
-
-        cols = [c for c in AUDIO_FEATURES if c in merged.columns]
-        raw = merged[cols].fillna(0).values
-        self.feature_matrix = self.scaler.fit_transform(raw)
-
-    def recommend(self, seed_track_ids: list[str], n: int = 20) -> pd.DataFrame:
-        if self.feature_matrix is None:
-            raise RuntimeError("Call fit() first.")
-
-        idx_map = {tid: i for i, tid in enumerate(self.track_ids)}
-        seed_idxs = [idx_map[tid] for tid in seed_track_ids if tid in idx_map]
-        if not seed_idxs:
-            return pd.DataFrame()
-
-        seed_vec = self.feature_matrix[seed_idxs].mean(axis=0, keepdims=True)
-        sims = cosine_similarity(seed_vec, self.feature_matrix)[0]
-
-        # Exclude seeds
-        for i in seed_idxs:
-            sims[i] = -1
-
-        top_idxs = np.argsort(sims)[::-1][:n]
-        result = self.track_meta.iloc[top_idxs].copy()
-        result["score"] = sims[top_idxs]
-        return result.reset_index(drop=True)
+def artifacts_exist() -> bool:
+    required = ["artist_factors.npy", "artist_names.npy",
+                "content_features.npy", "content_meta.parquet"]
+    return all((MODELS_DIR / f).exists() for f in required)
 
 
 class CollaborativeRecommender:
-    """
-    Implicit ALS matrix factorization on user-item interaction matrix.
-    Falls back to popularity-based ranking if `implicit` is not installed.
-    """
+    """Artist recommendations from ALS latent factors (Last.fm-trained)."""
 
-    def __init__(self, factors: int = 64, iterations: int = 20, regularization: float = 0.1):
-        self.factors = factors
-        self.iterations = iterations
-        self.regularization = regularization
-        self.model = None
-        self.user_ids: list[str] = []
-        self.track_ids: list[str] = []
-        self.track_meta: pd.DataFrame | None = None
-        self.item_user_matrix: csr_matrix | None = None
+    def __init__(self):
+        self.factors = np.load(MODELS_DIR / "artist_factors.npy")
+        self.names = np.load(MODELS_DIR / "artist_names.npy", allow_pickle=True)
+        # Normalise factors once so dot product == cosine similarity.
+        norms = np.linalg.norm(self.factors, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        self._unit = self.factors / norms
+        self._lower = {n.lower(): i for i, n in enumerate(self.names)}
+        with open(MODELS_DIR / "collab_meta.json") as f:
+            self.meta = json.load(f)
 
-    def fit(self, interactions_df: pd.DataFrame, track_meta_df: pd.DataFrame):
-        """
-        interactions_df: columns [user_id, track_id, weight]
-        track_meta_df:   columns [track_id, name, artist]
-        """
-        self.user_ids = list(interactions_df["user_id"].unique())
-        self.track_ids = list(interactions_df["track_id"].unique())
-        self.track_meta = track_meta_df.set_index("track_id")
+    def search_artists(self, query: str, limit: int = 10) -> list[str]:
+        q = query.lower().strip()
+        exact = [n for n in self.names if n.lower() == q]
+        prefix = [n for n in self.names if n.lower().startswith(q) and n.lower() != q]
+        contains = [n for n in self.names if q in n.lower()
+                    and not n.lower().startswith(q)]
+        seen, out = set(), []
+        for n in exact + prefix + contains:
+            if n not in seen:
+                seen.add(n)
+                out.append(n)
+            if len(out) >= limit:
+                break
+        return out
 
-        user_idx = {u: i for i, u in enumerate(self.user_ids)}
-        item_idx = {t: i for i, t in enumerate(self.track_ids)}
+    def recommend(self, seed_artists: list[str], n: int = 20) -> pd.DataFrame:
+        idxs = [self._lower[a.lower()] for a in seed_artists if a.lower() in self._lower]
+        if not idxs:
+            return pd.DataFrame(columns=["artist", "score"])
 
-        rows = interactions_df["track_id"].map(item_idx)
-        cols = interactions_df["user_id"].map(user_idx)
-        data = interactions_df["weight"].values
+        seed_vec = self._unit[idxs].mean(axis=0, keepdims=True)
+        sims = (self._unit @ seed_vec.T).ravel()
+        sims[idxs] = -np.inf  # exclude seeds
 
-        self.item_user_matrix = csr_matrix(
-            (data, (rows, cols)),
-            shape=(len(self.track_ids), len(self.user_ids)),
-        )
-
-        if HAS_IMPLICIT:
-            self.model = implicit.als.AlternatingLeastSquares(
-                factors=self.factors,
-                iterations=self.iterations,
-                regularization=self.regularization,
-                use_gpu=False,
-            )
-            self.model.fit(self.item_user_matrix)
-
-    def recommend_for_user(self, user_id: str, n: int = 20) -> pd.DataFrame:
-        if self.item_user_matrix is None:
-            raise RuntimeError("Call fit() first.")
-
-        if HAS_IMPLICIT and user_id in self.user_ids and len(self.user_ids) > 1:
-            uid = self.user_ids.index(user_id)
-            user_items = self.item_user_matrix.T.tocsr()
-            capped_n = min(n, len(self.track_ids))
-            try:
-                item_ids, scores = self.model.recommend(
-                    uid, user_items, N=capped_n, filter_already_liked_items=True
-                )
-                recs = []
-                for iid, score in zip(item_ids, scores):
-                    tid = self.track_ids[iid]
-                    meta = self.track_meta.loc[tid] if tid in self.track_meta.index else {}
-                    recs.append({
-                        "track_id": tid,
-                        "name": meta.get("name", "Unknown"),
-                        "artist": meta.get("artist", "Unknown"),
-                        "score": float(score),
-                    })
-                return pd.DataFrame(recs)
-            except Exception:
-                pass  # fall through to popularity fallback
-
-        # Fallback: popularity within dataset
-        counts = (
-            self.item_user_matrix.sum(axis=1).A1
-        )
-        top_idxs = np.argsort(counts)[::-1][:n]
-        recs = []
-        for i in top_idxs:
-            tid = self.track_ids[i]
-            meta = self.track_meta.loc[tid] if tid in self.track_meta.index else {}
-            recs.append({
-                "track_id": tid,
-                "name": meta.get("name", "Unknown"),
-                "artist": meta.get("artist", "Unknown"),
-                "score": float(counts[i]),
-            })
-        return pd.DataFrame(recs)
+        top = np.argpartition(-sims, n)[:n]
+        top = top[np.argsort(-sims[top])]
+        return pd.DataFrame({"artist": self.names[top], "score": sims[top]}).reset_index(drop=True)
 
 
-class HybridRecommender:
-    """Blends content-based and collaborative signals."""
+class ContentRecommender:
+    """Track recommendations via cosine similarity on audio features."""
 
-    def __init__(self, alpha: float = 0.5):
-        self.alpha = alpha  # weight for collaborative score
-        self.content = ContentBasedRecommender()
-        self.collab = CollaborativeRecommender()
-        self._collab_fitted = False
-        self._content_fitted = False
+    def __init__(self):
+        self.features = np.load(MODELS_DIR / "content_features.npy")
+        self.meta = pd.read_parquet(MODELS_DIR / "content_meta.parquet").reset_index(drop=True)
+        # Pre-normalise for fast cosine via dot product.
+        norms = np.linalg.norm(self.features, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-9
+        self._unit = self.features / norms
+        self._name_idx = {
+            (str(r.track_name).lower(), str(r.artists).lower()): i
+            for i, r in enumerate(self.meta.itertuples())
+        }
 
-    def fit_content(self, tracks_df: pd.DataFrame, features_df: pd.DataFrame):
-        self.content.fit(tracks_df, features_df)
-        self._content_fitted = True
+    def search_tracks(self, query: str, limit: int = 15) -> pd.DataFrame:
+        q = query.lower().strip()
+        mask = (self.meta["track_name"].str.lower().str.contains(q, na=False, regex=False) |
+                self.meta["artists"].str.lower().str.contains(q, na=False, regex=False))
+        hits = self.meta[mask].copy()
+        return hits.sort_values("popularity", ascending=False).head(limit)
 
-    def fit_collab(self, interactions_df: pd.DataFrame, track_meta_df: pd.DataFrame):
-        self.collab.fit(interactions_df, track_meta_df)
-        self._collab_fitted = True
-
-    def recommend(self, seed_track_ids: list[str], user_id: str | None = None,
-                  n: int = 20) -> pd.DataFrame:
-        results = {}
-
-        if self._content_fitted:
-            cb = self.content.recommend(seed_track_ids, n=n * 2)
-            for _, row in cb.iterrows():
-                results[row["track_id"]] = {
-                    "track_id": row["track_id"],
-                    "name": row["name"],
-                    "artist": row["artist"],
-                    "content_score": row["score"],
-                    "collab_score": 0.0,
-                }
-
-        if self._collab_fitted and user_id:
-            cf = self.collab.recommend_for_user(user_id, n=n * 2)
-            for _, row in cf.iterrows():
-                tid = row["track_id"]
-                if tid in results:
-                    results[tid]["collab_score"] = row["score"]
-                else:
-                    results[tid] = {
-                        "track_id": tid,
-                        "name": row["name"],
-                        "artist": row["artist"],
-                        "content_score": 0.0,
-                        "collab_score": row["score"],
-                    }
-
-        if not results:
+    def recommend(self, seed_track_ids: list[str], n: int = 20,
+                  same_genre: bool = False) -> pd.DataFrame:
+        id_to_idx = {tid: i for i, tid in enumerate(self.meta["track_id"].values)}
+        idxs = [id_to_idx[t] for t in seed_track_ids if t in id_to_idx]
+        if not idxs:
             return pd.DataFrame()
 
-        df = pd.DataFrame(results.values())
-        # Normalise each score to [0,1] before blending
-        for col in ["content_score", "collab_score"]:
-            mx = df[col].max()
-            if mx > 0:
-                df[col] = df[col] / mx
+        seed_vec = self._unit[idxs].mean(axis=0, keepdims=True)
+        sims = (self._unit @ seed_vec.T).ravel()
+        sims[idxs] = -np.inf
 
-        df["hybrid_score"] = (1 - self.alpha) * df["content_score"] + self.alpha * df["collab_score"]
-        df = df[~df["track_id"].isin(seed_track_ids)]
-        return df.sort_values("hybrid_score", ascending=False).head(n).reset_index(drop=True)
+        if same_genre:
+            seed_genres = set(self.meta.iloc[idxs]["track_genre"])
+            genre_mask = ~self.meta["track_genre"].isin(seed_genres).values
+            sims[genre_mask] = -np.inf
+
+        top = np.argpartition(-sims, min(n, len(sims) - 1))[:n]
+        top = top[np.argsort(-sims[top])]
+        result = self.meta.iloc[top].copy()
+        result["score"] = sims[top]
+        return result.reset_index(drop=True)

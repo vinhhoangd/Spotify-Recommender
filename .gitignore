@@ -9,3 +9,6 @@ spotify-recommender/.env
 .Rhistory
 __pycache__/
 *.pyc
+
+# Trained model artifacts (regenerate with train.py)
+spotify-recommender/models/
