@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "snake-game",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8000"],
+      "port": 8000
+    },
+    {
+      "name": "spotify-recommender",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "spotify-recommender/app.py", "--server.address", "127.0.0.1", "--server.port", "8501"],
+      "port": 8501
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+
+# Secrets
+.env
+spotify-recommender/.env
+.spotify_cache
+
+# Cruft
+.DS_Store
+.Rhistory
+__pycache__/
+*.pyc
