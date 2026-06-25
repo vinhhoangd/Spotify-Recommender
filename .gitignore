@@ -19,3 +19,5 @@ spotify-recommender/models/
 spotify-recommender/data/
 .cache
 .spotify_cache
+.streamlit/secrets.toml
+spotify-recommender/.streamlit/secrets.toml

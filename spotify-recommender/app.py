@@ -7,10 +7,25 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(page_title="Music Recommender", page_icon="🎵", layout="wide")
+
+# On Streamlit Cloud, Spotify creds live in st.secrets; mirror them into the
+# environment so spotify_client (which reads os.getenv) picks them up. Also
+# allow overriding the model-bundle URL via secrets.
+for _k in ("SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "MODELS_URL"):
+    try:
+        if _k in st.secrets:
+            os.environ.setdefault(_k, str(st.secrets[_k]))
+    except Exception:
+        pass  # no secrets.toml locally — fine, falls back to .env
+
+# Fetch trained artifacts on first boot if they aren't bundled with the app.
+from model_store import ensure_models
+with st.spinner("Preparing models (first launch only)…"):
+    ensure_models()
+
 from recommender import artifacts_exist, CollaborativeRecommender, ContentRecommender
 import spotify_client as sc
-
-st.set_page_config(page_title="Music Recommender", page_icon="🎵", layout="wide")
 
 st.markdown("""
 <style>
