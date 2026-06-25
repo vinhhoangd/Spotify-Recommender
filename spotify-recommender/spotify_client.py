@@ -56,33 +56,38 @@ def enrich_track(track_name: str, artist: str) -> dict:
         return {}
 
 
-def enrich_tracks_by_id(track_ids: tuple[str, ...]) -> dict:
-    """
-    Batch-fetch artist name / cover art / preview / link for Spotify track IDs.
-    Returns {track_id: {...}}. Used by the content recommender, whose dataset
-    has no artist/genre columns. Accepts a tuple so callers can cache it.
-    """
+@functools.lru_cache(maxsize=8192)
+def _enrich_one_track(track_id: str) -> dict:
+    """Single-track lookup. Spotify 403-blocks the batch /tracks endpoint for
+    new apps, but the single /tracks/{id} endpoint works, so we fetch one at a
+    time (results are cached, and only ~12-15 are shown per query)."""
     sp = get_client()
     if sp is None:
         return {}
+    try:
+        t = sp.track(track_id)
+    except Exception:
+        return {}
+    imgs = t["album"].get("images", [])
+    return {
+        "artist": ", ".join(a["name"] for a in t.get("artists", [])) or "Unknown",
+        "image_url": imgs[0]["url"] if imgs else None,
+        "preview_url": t.get("preview_url"),
+        "external_url": t["external_urls"].get("spotify"),
+    }
+
+
+def enrich_tracks_by_id(track_ids: tuple[str, ...]) -> dict:
+    """Fetch artist name / cover art / preview / link for Spotify track IDs.
+    Returns {track_id: {...}}. Used by the content recommender, whose dataset
+    has no artist/genre columns."""
+    if get_client() is None:
+        return {}
     out = {}
-    ids = list(track_ids)
-    for i in range(0, len(ids), 50):
-        batch = ids[i:i + 50]
-        try:
-            res = sp.tracks(batch).get("tracks", [])
-        except Exception:
-            continue
-        for t in res:
-            if not t:
-                continue
-            imgs = t["album"].get("images", [])
-            out[t["id"]] = {
-                "artist": ", ".join(a["name"] for a in t.get("artists", [])) or "Unknown",
-                "image_url": imgs[0]["url"] if imgs else None,
-                "preview_url": t.get("preview_url"),
-                "external_url": t["external_urls"].get("spotify"),
-            }
+    for tid in track_ids:
+        meta = _enrich_one_track(tid)
+        if meta:
+            out[tid] = meta
     return out
 
 
