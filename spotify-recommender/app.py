@@ -63,7 +63,7 @@ if not artifacts_exist():
     st.title("🎵 Music Recommender")
     st.error("Trained models not found. Run the training pipeline first:")
     st.code("python train.py", language="bash")
-    st.caption("This downloads the Last.fm 360K and Spotify Tracks datasets "
+    st.caption("This downloads the Million Playlist Dataset and Spotify Tracks datasets "
                "and trains the ALS + content models (~2-3 min, one time).")
     st.stop()
 
@@ -71,7 +71,7 @@ collab, content = load_models()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 st.title("🎵 Music Recommender")
-st.caption("ALS matrix factorization (Last.fm 360K) + content-based filtering "
+st.caption("ALS matrix factorization (Spotify Million Playlist Dataset) + content-based filtering "
            "(Spotify audio features). Live Spotify API used for cover art.")
 
 with st.sidebar:
@@ -104,13 +104,19 @@ tab_artist, tab_track, tab_about = st.tabs(
 # ── Collaborative: artist → artists ──────────────────────────────────────────
 with tab_artist:
     st.subheader("Find artists similar to ones you like")
-    st.caption("Powered by ALS matrix factorization on 17.5M Last.fm listening events.")
+    st.caption("Powered by ALS matrix factorization on 100k Spotify playlists (3.8M artist co-occurrences).")
     query = st.text_input("Search an artist", placeholder="e.g. Radiohead, Daft Punk, Kendrick Lamar",
                           key="artist_q")
     if query:
         matches = collab.search_artists(query, limit=8)
         if not matches:
-            st.warning(f"No artist matching '{query}' in the Last.fm dataset.")
+            st.warning(
+                f"No artist matching **'{query}'** in the dataset. "
+                "The collaborative model is trained on the **2018** Million Playlist "
+                "Dataset, so it covers mainstream artists through 2018 but not 2019+ "
+                "debuts (e.g. Olivia Rodrigo, Ice Spice) or very obscure artists.\n\n"
+                "👉 Try the **Similar Tracks (Content)** tab — its catalog is newer."
+            )
         else:
             seeds = st.multiselect("Seed artist(s)", matches, default=matches[:1], key="artist_seeds")
             if seeds:
@@ -162,13 +168,15 @@ The Spotify API is used only to fetch cover art — not for the ML — because S
 deprecated `/audio-features` and `/recommendations` for new apps in Nov 2024.
 
 ### 1. Collaborative Filtering — ALS Matrix Factorization
-**Dataset:** Last.fm 360K — 358k users × 292k artists, 17.5M play counts.
+**Dataset:** Spotify Million Playlist Dataset (2018) — 100k playlists, 3.8M
+artist co-occurrences, ~45k artists (kept those in ≥3 playlists).
 
-Raw play counts are weighted with **BM25** (dampens power users and globally
-popular artists), then the user-artist matrix is factorized with **Alternating
-Least Squares (ALS)** from the `implicit` library. Each artist is embedded as a
-dense latent vector; similar artists are found by **cosine similarity** in that
-learned space. Multi-seed queries average the seed vectors.
+Playlists are treated as "users" and artists as "items"; an artist's weight in
+a playlist is how many of its tracks appear there. The matrix is weighted with
+**BM25** (dampens huge playlists and ubiquitous artists), then factorized with
+**Alternating Least Squares (ALS)** from the `implicit` library. Each artist is
+embedded as a dense latent vector; similar artists are found by **cosine
+similarity** in that learned space. Multi-seed queries average the seed vectors.
 
 This is the same family of algorithm behind production music recommenders.
 Model quality is measured offline with **precision@k / MAP / NDCG** on a 10%
@@ -184,8 +192,8 @@ vectors, optionally constrained to the seed's genre.
 
 ### Architecture
 ```
-Last.fm 360K ──► BM25 weight ──► ALS factorization ──► artist embeddings
-Spotify Tracks ─► MinMax scale ─► audio-feature matrix ─► cosine similarity
+Million Playlist Dataset ─► BM25 weight ─► ALS factorization ─► artist embeddings
+Spotify Tracks ──────────► MinMax scale ─► audio-feature matrix ► cosine similarity
                                           │
                                    Streamlit UI ◄── Spotify API (cover art)
 ```

@@ -8,7 +8,7 @@ A music recommendation system combining **collaborative filtering (ALS matrix fa
 
 ## ✨ Features
 
-- **Similar Artists** — ALS matrix factorization trained on 17.5M Last.fm listening events. Search any artist (or several) and get recommendations from the learned latent space.
+- **Similar Artists** — ALS matrix factorization trained on the Spotify Million Playlist Dataset (100k playlists, 3.8M artist co-occurrences). Search any artist (or several) and get recommendations from the learned latent space.
 - **Similar Tracks** — cosine similarity over normalized Spotify audio features across ~90k tracks, with an optional same-genre constraint.
 - **Offline evaluation** — precision@k, MAP, and NDCG on a held-out split, surfaced live in the UI.
 - **Cover art enrichment** — optional, via the Spotify Web API (Client Credentials flow — no user login).
@@ -18,32 +18,33 @@ A music recommendation system combining **collaborative filtering (ALS matrix fa
 
 ## 📊 Model performance
 
-ALS collaborative model, evaluated @10 on a 10% held-out split of Last.fm 360K:
+ALS collaborative model, evaluated @10 on a 10% held-out split of the Million Playlist Dataset:
 
 | Metric | Score |
 |---|---|
-| Precision@10 | **0.110** |
-| MAP@10 | **0.050** |
+| Precision@10 | **0.108** |
+| MAP@10 | **0.059** |
 | NDCG@10 | **0.097** |
-| AUC | **0.555** |
+| AUC | **0.559** |
 
-Trained on **358,868 users × 292,385 artists**, 64 latent factors, 15 iterations, BM25-weighted play counts.
+Trained on **100,000 playlists × ~45,000 artists**, 96 latent factors, 20 iterations, BM25-weighted artist co-occurrences.
 
 **Qualitative sanity check:**
 
 | Seed artist | Top recommendations |
 |---|---|
-| Radiohead | Thom Yorke, Sigur Rós, Beck, Interpol, Smashing Pumpkins |
-| Daft Punk | Justice, The Chemical Brothers, Röyksopp, Gorillaz |
+| The Weeknd | PARTYNEXTDOOR, Jeremih, Tory Lanez, Tinashe, Niykee Heaton |
+| Drake | Big Sean, French Montana, Ty Dolla $ign, DJ Khaled, Desiigner |
+| Kendrick Lamar | J. Cole, Joey Bada$$, A$AP Rocky, ScHoolboy Q, Vic Mensa |
 
 ---
 
 ## 🧠 How it works
 
 ### 1. Collaborative filtering — ALS matrix factorization
-**Dataset:** [Last.fm 360K](http://www.dtic.upf.edu/~ocelma/MusicRecommendationDataset/lastfm-360K.html) — 358k users × 292k artists, 17.5M play counts (auto-downloaded via the `implicit` library).
+**Dataset:** [Spotify Million Playlist Dataset](https://huggingface.co/datasets/jaxliu/Spotify_Million_Playlist_Dataset_Challenge) (2018) — 100k playlists, 3.8M artist co-occurrences, ~45k artists (auto-downloaded from a HuggingFace mirror).
 
-Raw play counts are weighted with **BM25** to dampen power users and globally popular artists, then the user–artist matrix is factorized with **Alternating Least Squares (ALS)**. Each artist becomes a dense latent vector; similar artists are found by **cosine similarity** in that embedding space. Multi-seed queries average the seed vectors before searching.
+Playlists are treated as "users" and artists as "items"; an artist's weight in a playlist is how many of its tracks appear there. The matrix is weighted with **BM25** to dampen large playlists and ubiquitous artists, then factorized with **Alternating Least Squares (ALS)**. Each artist becomes a dense latent vector; similar artists are found by **cosine similarity** in that embedding space. Multi-seed queries average the seed vectors before searching.
 
 ### 2. Content-based filtering
 **Dataset:** [Spotify Tracks Dataset](https://huggingface.co/datasets/maharshipandya/spotify-tracks-dataset) — ~114k tracks across 125 genres, with audio features.
@@ -53,10 +54,10 @@ Nine features (`danceability`, `energy`, `loudness`, `speechiness`, `acousticnes
 ### Architecture
 
 ```
-Last.fm 360K   ──► BM25 weight  ──► ALS factorization ──► artist embeddings ┐
-Spotify Tracks ──► MinMax scale ──► audio-feature matrix ─► cosine similarity ┤
-                                                                              ▼
-                                                       Streamlit UI ◄── Spotify API (cover art)
+Million Playlist Dataset ──► BM25 weight  ──► ALS factorization ──► artist embeddings ┐
+Spotify Tracks ───────────► MinMax scale ──► audio-feature matrix ─► cosine similarity ┤
+                                                                                       ▼
+                                                                Streamlit UI ◄── Spotify API (cover art)
 ```
 
 ---
@@ -67,7 +68,8 @@ Spotify Tracks ──► MinMax scale ──► audio-feature matrix ─► cosi
 cd spotify-recommender
 pip install -r requirements.txt
 
-# Train models (downloads ~200MB of data, ~3 min one-time)
+# Train models (downloads ~3.3GB of data, ~8-12 min one-time)
+# Use fewer playlists for a faster/lighter run:  python train.py --slices 30
 python train.py
 
 # Launch the app
@@ -113,6 +115,7 @@ spotify-recommender/
 
 ## 📌 Notes & limitations
 
-- Collaborative recommendations are **artist-level** (the Last.fm dataset is user–artist, not user–track).
+- Collaborative recommendations are **artist-level**, aggregated from playlist co-occurrence.
+- The Million Playlist Dataset is from **2018**, so the collaborative model covers mainstream artists through 2018 but not 2019+ debuts or the obscure long tail. The Content tab uses a newer (~2022) catalog.
 - Content recommendations match acoustic profile, which can cross genres — use the same-genre toggle for tighter results.
 - Model artifacts (`models/`) are gitignored; regenerate them with `python train.py`.

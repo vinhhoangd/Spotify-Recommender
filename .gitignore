@@ -16,3 +16,6 @@ spotify-recommender/models/
 # Codex env
 .codex/
 .vscode/
+spotify-recommender/data/
+.cache
+.spotify_cache
