@@ -97,6 +97,11 @@ with st.sidebar:
                          help="Requires SPOTIFY_CLIENT_ID/SECRET in .env" if not sc.is_available() else None)
     if not sc.is_available():
         st.caption("⚠️ No Spotify credentials — recommendations work, but without cover art.")
+        with st.expander("🔍 Credentials diagnostic"):
+            st.write(sc.creds_status())
+            st.caption("Both should read **env** or **secrets**. 'missing' means the "
+                       "key isn't set; if both are set but cover art still fails, the "
+                       "secret is likely wrong/expired (Spotify rejected it).")
     st.divider()
     with st.expander("📊 Model stats"):
         try:

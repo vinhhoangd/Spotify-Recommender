@@ -16,15 +16,47 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _read_cred(key: str) -> str | None:
+    """Look for a credential in env vars first, then Streamlit secrets."""
+    val = os.getenv(key)
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if key in st.secrets:
+            return str(st.secrets[key])
+    except Exception:
+        pass
+    return None
+
+
+def creds_status() -> dict:
+    """Non-secret diagnostic: which source each credential came from."""
+    def src(key):
+        if os.getenv(key):
+            return "env"
+        try:
+            import streamlit as st
+            if key in st.secrets:
+                return "secrets"
+        except Exception:
+            pass
+        return "missing"
+    return {"SPOTIFY_CLIENT_ID": src("SPOTIFY_CLIENT_ID"),
+            "SPOTIFY_CLIENT_SECRET": src("SPOTIFY_CLIENT_SECRET")}
+
+
 @functools.lru_cache(maxsize=1)
 def get_client():
-    cid = os.getenv("SPOTIFY_CLIENT_ID")
-    secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+    cid = _read_cred("SPOTIFY_CLIENT_ID")
+    secret = _read_cred("SPOTIFY_CLIENT_SECRET")
     if not cid or not secret or secret == "your_client_secret_here":
         return None
     try:
         auth = SpotifyClientCredentials(client_id=cid, client_secret=secret)
-        return spotipy.Spotify(auth_manager=auth, requests_timeout=10, retries=2)
+        sp = spotipy.Spotify(auth_manager=auth, requests_timeout=10, retries=2)
+        sp.search(q="test", type="track", limit=1)  # validate creds eagerly
+        return sp
     except Exception:
         return None
 
