@@ -47,9 +47,11 @@ Trained on **100,000 playlists × ~45,000 artists**, 96 latent factors, 20 itera
 Playlists are treated as "users" and artists as "items"; an artist's weight in a playlist is how many of its tracks appear there. The matrix is weighted with **BM25** to dampen large playlists and ubiquitous artists, then factorized with **Alternating Least Squares (ALS)**. Each artist becomes a dense latent vector; similar artists are found by **cosine similarity** in that embedding space. Multi-seed queries average the seed vectors before searching.
 
 ### 2. Content-based filtering
-**Dataset:** [Spotify Tracks Dataset](https://huggingface.co/datasets/maharshipandya/spotify-tracks-dataset) — ~114k tracks across 125 genres, with audio features.
+**Dataset:** [Spotify audio-features dump](https://huggingface.co/datasets/kevinanjalo/spotify_audio_features) — the 500k most popular tracks (of 25.5M) with audio features. Artist names and cover art are fetched live from the Spotify API by track ID (the dataset stores track name + features only).
 
-Nine features (`danceability`, `energy`, `loudness`, `speechiness`, `acousticness`, `instrumentalness`, `liveness`, `valence`, `tempo`) are min-max scaled. Track-to-track similarity is **cosine similarity** over these vectors, optionally restricted to the seed track's genre.
+Nine features (`danceability`, `energy`, `loudness`, `speechiness`, `acousticness`, `instrumentalness`, `liveness`, `valence`, `tempo`) are min-max scaled. Track-to-track similarity is **cosine similarity** over these vectors.
+
+> Audio features come from Spotify's `/audio-features` endpoint (deprecated for new apps in Nov 2024), so this catalog is capped at the pre-deprecation era — no 2025 releases, since the features to describe them can no longer be computed by anyone.
 
 ### Architecture
 

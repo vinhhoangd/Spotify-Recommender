@@ -135,27 +135,33 @@ with tab_artist:
 # ── Content: track → tracks ──────────────────────────────────────────────────
 with tab_track:
     st.subheader("Find tracks that sound similar")
-    st.caption("Cosine similarity over 9 normalised audio features across 114k tracks.")
-    tquery = st.text_input("Search a track or artist", placeholder="e.g. Bohemian Rhapsody",
+    st.caption(f"Cosine similarity over 9 normalised audio features across "
+               f"{len(content.meta):,} tracks.")
+    tquery = st.text_input("Search a track (by name)", placeholder="e.g. Blinding Lights",
                            key="track_q")
-    same_genre = st.checkbox("Restrict to same genre", value=False)
     if tquery:
-        hits = content.search_tracks(tquery, limit=15)
+        hits = content.search_tracks(tquery, limit=15).reset_index(drop=True)
         if hits.empty:
             st.warning(f"No track matching '{tquery}' in the catalog.")
         else:
-            labels = [f"{r.track_name} — {r.artists} ({r.track_genre})" for r in hits.itertuples()]
+            # Enrich search hits with artist names (dataset has track name only).
+            hit_meta = sc.enrich_tracks_by_id(tuple(hits["track_id"])) if enrich else {}
+            labels = []
+            for r in hits.itertuples():
+                artist = hit_meta.get(r.track_id, {}).get("artist", "")
+                labels.append(f"{r.track_name}" + (f" — {artist}" if artist else ""))
             choice = st.selectbox("Pick the seed track", options=range(len(labels)),
                                   format_func=lambda i: labels[i], key="track_pick")
             seed_id = hits.iloc[choice]["track_id"]
-            recs = content.recommend([seed_id], n=n_recs, same_genre=same_genre)
+            recs = content.recommend([seed_id], n=n_recs)
             if recs.empty:
                 st.info("No recommendations found.")
             else:
+                rec_meta = sc.enrich_tracks_by_id(tuple(recs["track_id"])) if enrich else {}
                 for i, row in recs.iterrows():
-                    meta = sc.enrich_track(row["track_name"], row["artists"]) if enrich else {}
+                    meta = rec_meta.get(row["track_id"], {})
                     render_card(i + 1, row["track_name"],
-                                f"{row['artists']} · {row['track_genre']}", row["score"],
+                                meta.get("artist", "—"), row["score"],
                                 image_url=meta.get("image_url"), link=meta.get("external_url"),
                                 preview=meta.get("preview_url"))
 
@@ -183,12 +189,18 @@ Model quality is measured offline with **precision@k / MAP / NDCG** on a 10%
 held-out split (see *Model stats* in the sidebar).
 
 ### 2. Content-Based Filtering
-**Dataset:** Spotify Tracks — 114k tracks across 125 genres with audio features.
+**Dataset:** Spotify audio-features dump — the 500k most popular tracks
+(of 25.5M) with audio features. Artist names and cover art are fetched live
+from the Spotify API by track ID (the dataset has track name + features only).
 
 Nine features (`danceability`, `energy`, `loudness`, `speechiness`,
 `acousticness`, `instrumentalness`, `liveness`, `valence`, `tempo`) are
 min-max scaled. Track-to-track similarity is **cosine similarity** over these
-vectors, optionally constrained to the seed's genre.
+vectors.
+
+> **Why no 2025 songs?** Audio features come from Spotify's `/audio-features`
+> endpoint, deprecated for new apps in Nov 2024 — so features can't be computed
+> for newer releases by anyone. This catalog is capped at the pre-deprecation era.
 
 ### Architecture
 ```

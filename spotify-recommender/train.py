@@ -45,8 +45,10 @@ DATA_DIR.mkdir(exist_ok=True, parents=True)
 MPD_REPO = "jaxliu/Spotify_Million_Playlist_Dataset_Challenge"
 MPD_BASE = f"https://huggingface.co/datasets/{MPD_REPO}/resolve/main"
 MPD_MANIFEST = f"https://huggingface.co/api/datasets/{MPD_REPO}"
-CONTENT_CSV_URL = ("https://huggingface.co/datasets/maharshipandya/"
-                   "spotify-tracks-dataset/resolve/main/dataset.csv")
+CONTENT_PARQUET_URL = ("https://huggingface.co/datasets/kevinanjalo/"
+                       "spotify_audio_features/resolve/main/data/"
+                       "spotify_audio_features_0.parquet")
+CONTENT_TOP_N = 500_000  # keep the most popular tracks (search speed + memory)
 AUDIO_FEATURES = [
     "danceability", "energy", "loudness", "speechiness",
     "acousticness", "instrumentalness", "liveness", "valence", "tempo",
@@ -169,19 +171,39 @@ def train_collaborative(n_slices=50, factors=96, iterations=20, regularization=0
 # ── Content: audio-feature matrix on Spotify Tracks ───────────────────────────
 
 def train_content():
-    print("Loading Spotify Tracks dataset…")
-    df = pd.read_csv(CONTENT_CSV_URL)
-    df = df.dropna(subset=["track_name", "artists"]).drop_duplicates("track_id").reset_index(drop=True)
+    cols = ["id", "name", "popularity", "null_response"] + AUDIO_FEATURES
+    dest = DATA_DIR.parent / "content" / "spotify_audio_features_0.parquet"
+    dest.parent.mkdir(exist_ok=True, parents=True)
+    if not dest.exists():
+        print("Downloading Spotify audio-features dataset (~1.2GB)…")
+        with requests.get(CONTENT_PARQUET_URL, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            with open(dest, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1 << 20):
+                    f.write(chunk)
+
+    print("Loading audio features (reading needed columns only)…")
+    df = pd.read_parquet(dest, columns=cols)
+
+    # Drop failed API rows, missing features/names, dupes.
+    if "null_response" in df.columns:
+        df = df[df["null_response"] != True]  # noqa: E712
+    df = df.dropna(subset=["name"] + AUDIO_FEATURES).drop_duplicates("id")
+
+    # Keep the most popular tracks: searchable, memory-light, real songs.
+    df = df.sort_values("popularity", ascending=False).head(CONTENT_TOP_N).reset_index(drop=True)
+    print(f"  kept top {len(df):,} tracks by popularity")
 
     scaler = MinMaxScaler()
-    feature_matrix = scaler.fit_transform(df[AUDIO_FEATURES].fillna(0).values).astype(np.float32)
+    feature_matrix = scaler.fit_transform(df[AUDIO_FEATURES].values).astype(np.float32)
 
     np.save(MODELS_DIR / "content_features.npy", feature_matrix)
-    df[["track_id", "track_name", "artists", "album_name",
-        "track_genre", "popularity"]].to_parquet(MODELS_DIR / "content_meta.parquet")
+    meta = df[["id", "name", "popularity"]].rename(
+        columns={"id": "track_id", "name": "track_name"})
+    meta.to_parquet(MODELS_DIR / "content_meta.parquet")
     with open(MODELS_DIR / "content_scaler.pkl", "wb") as f:
         pickle.dump(scaler, f)
-    print(f"Saved content artifacts ({len(df):,} tracks).")
+    print(f"Saved content artifacts ({len(df):,} tracks; artist/genre fetched live via API).")
 
 
 if __name__ == "__main__":

@@ -77,33 +77,24 @@ class ContentRecommender:
         norms = np.linalg.norm(self.features, axis=1, keepdims=True)
         norms[norms == 0] = 1e-9
         self._unit = self.features / norms
-        self._name_idx = {
-            (str(r.track_name).lower(), str(r.artists).lower()): i
-            for i, r in enumerate(self.meta.itertuples())
-        }
+        self._id_to_idx = {tid: i for i, tid in enumerate(self.meta["track_id"].values)}
+        self._name_lower = self.meta["track_name"].astype(str).str.lower()
 
     def search_tracks(self, query: str, limit: int = 15) -> pd.DataFrame:
+        # This dataset has no artist/genre columns — search by track name only.
         q = query.lower().strip()
-        mask = (self.meta["track_name"].str.lower().str.contains(q, na=False, regex=False) |
-                self.meta["artists"].str.lower().str.contains(q, na=False, regex=False))
+        mask = self._name_lower.str.contains(q, na=False, regex=False).values
         hits = self.meta[mask].copy()
         return hits.sort_values("popularity", ascending=False).head(limit)
 
-    def recommend(self, seed_track_ids: list[str], n: int = 20,
-                  same_genre: bool = False) -> pd.DataFrame:
-        id_to_idx = {tid: i for i, tid in enumerate(self.meta["track_id"].values)}
-        idxs = [id_to_idx[t] for t in seed_track_ids if t in id_to_idx]
+    def recommend(self, seed_track_ids: list[str], n: int = 20) -> pd.DataFrame:
+        idxs = [self._id_to_idx[t] for t in seed_track_ids if t in self._id_to_idx]
         if not idxs:
             return pd.DataFrame()
 
         seed_vec = self._unit[idxs].mean(axis=0, keepdims=True)
         sims = (self._unit @ seed_vec.T).ravel()
         sims[idxs] = -np.inf
-
-        if same_genre:
-            seed_genres = set(self.meta.iloc[idxs]["track_genre"])
-            genre_mask = ~self.meta["track_genre"].isin(seed_genres).values
-            sims[genre_mask] = -np.inf
 
         top = np.argpartition(-sims, min(n, len(sims) - 1))[:n]
         top = top[np.argsort(-sims[top])]

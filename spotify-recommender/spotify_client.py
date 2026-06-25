@@ -56,6 +56,36 @@ def enrich_track(track_name: str, artist: str) -> dict:
         return {}
 
 
+def enrich_tracks_by_id(track_ids: tuple[str, ...]) -> dict:
+    """
+    Batch-fetch artist name / cover art / preview / link for Spotify track IDs.
+    Returns {track_id: {...}}. Used by the content recommender, whose dataset
+    has no artist/genre columns. Accepts a tuple so callers can cache it.
+    """
+    sp = get_client()
+    if sp is None:
+        return {}
+    out = {}
+    ids = list(track_ids)
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        try:
+            res = sp.tracks(batch).get("tracks", [])
+        except Exception:
+            continue
+        for t in res:
+            if not t:
+                continue
+            imgs = t["album"].get("images", [])
+            out[t["id"]] = {
+                "artist": ", ".join(a["name"] for a in t.get("artists", [])) or "Unknown",
+                "image_url": imgs[0]["url"] if imgs else None,
+                "preview_url": t.get("preview_url"),
+                "external_url": t["external_urls"].get("spotify"),
+            }
+    return out
+
+
 @functools.lru_cache(maxsize=2048)
 def enrich_artist(artist: str) -> dict:
     """Return image / link / genres / followers for an artist by name."""
